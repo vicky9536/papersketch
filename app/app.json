@@ -1,0 +1,18 @@
+{
+  "name": "PaperSketch Summarizer",
+  "version": "1.0.0",
+  "description": "Summarize PDFs using the PaperSketch API.",
+  "mcpServers": {
+    "papersketch": {
+      "command": "uv",
+      "args": ["run", "src/papersketch/server.py"]
+    }
+  },
+  "tools": [
+    {
+      "server": "papersketch",
+      "name": "summarize_paper",
+      "description": "Summarize an academic PDF using the PaperSketch service"
+    }
+  ]
+}

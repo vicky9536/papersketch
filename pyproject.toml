@@ -1,0 +1,18 @@
+[project]
+name = "papersketch"
+version = "0.1.0"
+description = "PaperSketch can generate summary image from a pdf url"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "httpx>=0.28.1",
+    "mcp[cli]>=1.22.0",
+    "python-dotenv>=1.2.1",
+]
+
+[project.scripts]
+papersketch = "papersketch:main"
+
+[build-system]
+requires = ["uv_build>=0.9.11,<0.10.0"]
+build-backend = "uv_build"
