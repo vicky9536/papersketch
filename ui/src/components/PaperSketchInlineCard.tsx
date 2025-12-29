@@ -1,48 +1,69 @@
+import { useMemo, useState } from "react"
 import { Badge } from "@openai/apps-sdk-ui/components/Badge"
 import { Button } from "@openai/apps-sdk-ui/components/Button"
-import { Sparkle, ExternalLink } from "@openai/apps-sdk-ui/components/Icon"
+import { Download, Sparkle } from "@openai/apps-sdk-ui/components/Icon"
 
-type SummaryBlock = { label: string; text: string }
+import { parsePaperSketchMarkdown } from "../lib/parsePaperSketch"
+import { composeSketchFromToolOutput } from "../lib/composeSketchFromMarkdown"
 
-export type PaperSketchToolOutput = {
-  paper?: {
-    title?: string
-    authors?: string[]
-    year?: number
-    venue?: string
-    url?: string
-  }
-  tldr?: string
-  key_takeaways?: string[]
-  summary_blocks?: SummaryBlock[] // you can show more in fullscreen later
-  generated_image_url?: string
+type ToolOutput = {
+  summary?: string
+  version?: string
+  modelInfo?: string
 }
 
-function safeArray<T>(v: unknown): T[] {
-  return Array.isArray(v) ? (v as T[]) : []
+async function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement("a")
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
 }
 
-export function PaperSketchInlineCard(props: { data: PaperSketchToolOutput }) {
+export function PaperSketchInlineCard(props: { data: ToolOutput }) {
   const { data } = props
-  const title = data.paper?.title ?? "Paper summary"
-  const authors = safeArray<string>(data.paper?.authors).slice(0, 3)
-  const year = data.paper?.year
-  const venue = data.paper?.venue
-  const url = data.paper?.url
 
-  const takeaways = safeArray<string>(data.key_takeaways).slice(0, 4)
-  const tldr = data.tldr ?? ""
+  const parsed = useMemo(() => parsePaperSketchMarkdown(data.summary ?? ""), [data.summary])
+  const title = parsed.title ?? "PaperSketch summary"
+  const authors = parsed.authors?.slice(0, 2)?.join(", ") ?? ""
+  const hasImages = parsed.images.length > 0
 
-  const onOpenPaper = () => {
-    if (!url) return
-    window.open(url, "_blank", "noopener,noreferrer")
+  // A short preview line (keep inline card light)
+  const preview =
+    parsed.plainPreview ||
+    "Summary generated. Open the sketch to see a visual overview and key points."
+
+  const [downloading, setDownloading] = useState(false)
+  const [note, setNote] = useState<string | null>(null)
+
+  const onDownloadSketch = async () => {
+    setNote(null)
+    setDownloading(true)
+    try {
+      const blob = await composeSketchFromToolOutput({ summary: data.summary ?? "" })
+      await downloadBlob(blob, "papersketch.png")
+
+      if (!hasImages) {
+        setNote("Downloaded a text-only sketch (no figures were returned).")
+      } else {
+        setNote("Downloaded sketch.")
+      }
+    } catch (e) {
+      console.error(e)
+      // Most common reason: CORS prevents embedding remote images into canvas
+      setNote("Couldn’t embed some images due to cross-origin restrictions. Try again or open figures directly.")
+    } finally {
+      setDownloading(false)
+    }
   }
 
-  const onRefineSummary = async () => {
-    // Keep actions minimal (inline card rule: max 2 primary actions). :contentReference[oaicite:4]{index=4}
+  const onRefineInChat = async () => {
     await window.openai?.sendFollowUpMessage?.({
       prompt:
-        "Refine the summary: keep it accurate, add 3 key contributions, 2 limitations, and a 1-sentence TL;DR.",
+        "Rewrite the summary into: 1 sentence TL;DR, 5 bullet key points, 3 contributions, 2 limitations. Keep it faithful.",
     })
   }
 
@@ -55,70 +76,50 @@ export function PaperSketchInlineCard(props: { data: PaperSketchToolOutput }) {
           <h2 className="mt-1 heading-lg truncate">{title}</h2>
 
           <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-secondary">
-            {authors.length > 0 && (
-              <span className="truncate">
-                {authors.join(", ")}
-                {safeArray<string>(data.paper?.authors).length > 3 ? " et al." : ""}
-              </span>
-            )}
-            {(venue || year) && (
+            {authors && <span className="truncate">{authors}{parsed.authors && parsed.authors.length > 2 ? " et al." : ""}</span>}
+            {(data.modelInfo || data.version) && (
               <span className="text-tertiary">
-                {venue ? venue : ""}
-                {venue && year ? " · " : ""}
-                {year ? year : ""}
+                {data.modelInfo ? data.modelInfo : ""}
+                {data.modelInfo && data.version ? " · " : ""}
+                {data.version ? `v${data.version}` : ""}
               </span>
             )}
           </div>
         </div>
 
-        <Badge color="secondary">Summary</Badge>
+        <Badge color={hasImages ? "discovery" : "info"}>
+          {hasImages ? `${parsed.images.length} figs` : "Text"}
+        </Badge>
       </div>
 
-      {/* Body */}
-      {tldr && (
-        <div className="mt-3 rounded-xl bg-surface-secondary p-3">
-          <p className="text-sm text-secondary">TL;DR</p>
-          <p className="mt-1 text-sm">{tldr}</p>
+      {/* Preview */}
+      <div className="mt-3 rounded-xl bg-surface-secondary p-3">
+        <div className="flex items-center gap-2">
+          <Sparkle className="size-4 text-secondary" />
+          <p className="text-sm text-secondary">Preview</p>
         </div>
-      )}
+        <p className="mt-1 text-sm">
+          {preview.length > 300 ? preview.slice(0, 300) + "…" : preview}
+        </p>
+      </div>
 
-      {/* Image preview (optional) */}
-      {data.generated_image_url && (
-        <div className="mt-3 overflow-hidden rounded-xl border border-default bg-surface">
-          {/* Keep aspect ratio stable; avoid internal scrolling. :contentReference[oaicite:5]{index=5} */}
-          <img
-            src={data.generated_image_url}
-            alt="Generated visual summary"
-            className="block w-full h-auto"
-          />
-        </div>
-      )}
+      {/* Note */}
+      {note && <p className="mt-3 text-sm text-secondary">{note}</p>}
 
-      {/* Key takeaways */}
-      {takeaways.length > 0 && (
-        <div className="mt-3">
-          <div className="flex items-center gap-2">
-            <Sparkle className="size-4 text-secondary" />
-            <p className="text-sm text-secondary">Key takeaways</p>
-          </div>
-          <ul className="mt-2 list-disc pl-5 text-sm space-y-1">
-            {takeaways.map((t, i) => (
-              <li key={i}>{t}</li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {/* Actions (rule: max two) */}
+      {/* Actions: keep it to 2 */}
       <div className="mt-4 flex items-center justify-end gap-2">
-        {url && (
-          <Button color="secondary" variant="outline" onClick={onOpenPaper}>
-            <ExternalLink className="size-4" />
-            Open paper
+        <Button color="secondary" variant="outline" onClick={onRefineInChat}>
+          Refine
         </Button>
-        )}
-        <Button color="secondary" variant="solid" onClick={onRefineSummary}>
-            Refine
+
+        <Button
+          color="secondary"
+          variant="solid"
+          onClick={onDownloadSketch}
+          disabled={downloading || !data.summary}
+        >
+          <Download className="size-4" />
+          {downloading ? "Building…" : "Download sketch"}
         </Button>
       </div>
     </div>

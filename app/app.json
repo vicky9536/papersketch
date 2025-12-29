@@ -5,7 +5,7 @@
   "mcpServers": {
     "papersketch": {
       "command": "uv",
-      "args": ["run", "src/papersketch/server.py"]
+      "args": ["run", "python", "-m", "papersketch.server"]
     }
   },
   "tools": [

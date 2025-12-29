@@ -1,7 +1,7 @@
 # src/papersketch/client.py
 
 import httpx
-from config import PAPERSKETCH_ENDPOINT, PAPERSKETCH_API_KEY, REQUEST_TIMEOUT
+from .config import PAPERSKETCH_ENDPOINT, PAPERSKETCH_API_KEY, REQUEST_TIMEOUT
 
 
 class PaperSketchClient:

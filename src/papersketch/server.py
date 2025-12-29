@@ -1,6 +1,6 @@
 # src/papersketch/server.py
 
-from tools import mcp
+from .tools import mcp
 
 
 def main() -> None:
