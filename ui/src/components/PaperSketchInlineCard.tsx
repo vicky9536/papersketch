@@ -14,14 +14,32 @@ type ToolOutput = {
 
 async function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob)
+
   const a = document.createElement("a")
   a.href = url
   a.download = filename
+  a.rel = "noopener"
+  a.style.display = "none"
+
   document.body.appendChild(a)
   a.click()
-  a.remove()
-  URL.revokeObjectURL(url)
+
+  // Fallback: if browser blocks iframe download, open in new tab
+  setTimeout(() => {
+    try {
+      window.open(url, "_blank", "noopener,noreferrer")
+    } catch {
+      // ignore
+    }
+  }, 300)
+
+  // Cleanup AFTER both attempts had time to run
+  setTimeout(() => {
+    a.remove()
+    URL.revokeObjectURL(url)
+  }, 3000)
 }
+
 
 export function PaperSketchInlineCard(props: { data: ToolOutput }) {
   const { data } = props
@@ -39,26 +57,40 @@ export function PaperSketchInlineCard(props: { data: ToolOutput }) {
   const [downloading, setDownloading] = useState(false)
   const [note, setNote] = useState<string | null>(null)
 
-  const onDownloadSketch = async () => {
-    setNote(null)
-    setDownloading(true)
-    try {
-      const blob = await composeSketchFromToolOutput({ summary: data.summary ?? "" })
-      await downloadBlob(blob, "papersketch.png")
+const onDownloadSketch = async () => {
+  setNote(null)
+  setDownloading(true)
 
-      if (!hasImages) {
-        setNote("Downloaded a text-only sketch (no figures were returned).")
-      } else {
-        setNote("Downloaded sketch.")
-      }
-    } catch (e) {
-      console.error(e)
-      // Most common reason: CORS prevents embedding remote images into canvas
-      setNote("Couldn’t embed some images due to cross-origin restrictions. Try again or open figures directly.")
-    } finally {
-      setDownloading(false)
+  try {
+    setNote("Preparing sketch…")
+
+    const blob = await composeSketchFromToolOutput({
+      summary: data.summary ?? "",
+    })
+
+    if (!(blob instanceof Blob)) {
+      setNote("Error: sketch generator did not return a Blob.")
+      return
     }
+
+    if (blob.size === 0) {
+      setNote("Error: sketch Blob is empty.")
+      return
+    }
+
+    setNote(`Sketch ready (${Math.round(blob.size / 1024)} KB). Downloading…`)
+
+    await downloadBlob(blob, "papersketch.png")
+
+    setNote("Downloaded sketch.")
+  } catch (e) {
+    console.error(e)
+    setNote("Download failed. See console.")
+  } finally {
+    setDownloading(false)
   }
+}
+
 
   const onRefineInChat = async () => {
     await window.openai?.sendFollowUpMessage?.({

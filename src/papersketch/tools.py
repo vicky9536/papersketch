@@ -1,138 +1,180 @@
 # src/papersketch/tools.py
-
 from __future__ import annotations
 
-import os
-import glob
-from typing import TypedDict, Optional, Any
+from pathlib import Path
+from typing import Any, Dict, List
+import time
 
+import mcp.types as types
 from mcp.server.fastmcp import FastMCP
+
 from .client import PaperSketchClient
 
-# MCP server object
-mcp = FastMCP("papersketch-server")
+TOOL_NAME = "summarize_paper"
+WIDGET_TEMPLATE_URI = "ui://widget/papersketch-inline.html"
+WIDGET_TITLE = "PaperSketch summary"
+WIDGET_INVOKING = "Generating PaperSketch…"
+WIDGET_INVOKED = "PaperSketch ready"
+MIME_TYPE = "text/html+skybridge"
 
-# Reuse one client instance
+# IMPORTANT: stateless for multi-client (Inspector + GPT)
+mcp = FastMCP(name="papersketch", stateless_http=True)
+
 _client = PaperSketchClient()
 
-
-class PaperSketchResult(TypedDict, total=False):
-    summary: str
-    version: Optional[str]
-    modelInfo: Optional[str]
+ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+WIDGET_HTML_PATH = ASSETS_DIR / "papersketch-inline.html"
 
 
-# -----------------------------
-# Apps SDK UI Widget Resource
-# -----------------------------
-WIDGET_URI = "ui://papersketch/inline-card"
+def log(msg: str) -> None:
+    print(f"[PAPERSKETCH MCP] {msg}", flush=True)
 
-def _repo_root() -> str:
-    # src/papersketch/tools.py -> repo root is ../../..
-    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
-def _load_ui_bundle() -> tuple[str, str]:
-    """
-    Load the Vite build output from ui/dist/assets.
-    Requires: (cd ui && npm run build)
-    """
-    root = _repo_root()
-    assets_dir = os.path.join(root, "ui", "dist", "assets")
+def _load_widget_html() -> str:
+    log("Loading widget HTML")
+    if WIDGET_HTML_PATH.exists():
+        html = WIDGET_HTML_PATH.read_text(encoding="utf8")
+        log(f"Widget HTML loaded ({len(html)} bytes)")
+        return html
+    raise FileNotFoundError(
+        f"Widget HTML not found at {WIDGET_HTML_PATH}"
+    )
 
-    js_files = sorted(glob.glob(os.path.join(assets_dir, "*.js")))
-    css_files = sorted(glob.glob(os.path.join(assets_dir, "*.css")))
 
-    if not js_files:
-        raise RuntimeError(
-            f"No UI bundle found in {assets_dir}. Run `cd ui && npm run build` first."
+PAPERSKETCH_WIDGET_HTML = _load_widget_html()
+
+
+def _widget_meta() -> Dict[str, Any]:
+    return {
+        "openai/outputTemplate": WIDGET_TEMPLATE_URI,
+        "openai/toolInvocation/invoking": WIDGET_INVOKING,
+        "openai/toolInvocation/invoked": WIDGET_INVOKED,
+        "openai/widgetAccessible": True,
+    }
+
+
+# --- Tool schema ---
+TOOL_INPUT_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "url": {"type": "string"},
+        "lang": {"type": "string", "enum": ["en", "ch"], "default": "en"},
+    },
+    "required": ["url"],
+    "additionalProperties": False,
+}
+
+
+@mcp._mcp_server.list_tools()
+async def _list_tools() -> List[types.Tool]:
+    log("list_tools called")
+    return [
+        types.Tool(
+            name=TOOL_NAME,
+            title="Summarize paper",
+            description="Summarize an academic PDF and render a PaperSketch inline card.",
+            inputSchema=TOOL_INPUT_SCHEMA,
+            _meta=_widget_meta(),
+        )
+    ]
+
+
+@mcp._mcp_server.list_resources()
+async def _list_resources() -> List[types.Resource]:
+    log("list_resources called")
+    return [
+        types.Resource(
+            name=WIDGET_TITLE,
+            title=WIDGET_TITLE,
+            uri=WIDGET_TEMPLATE_URI,
+            description="PaperSketch widget",
+            mimeType=MIME_TYPE,
+            _meta=_widget_meta(),
+        )
+    ]
+
+
+async def _handle_read_resource(req: types.ReadResourceRequest) -> types.ServerResult:
+    log(f"READ_RESOURCE start: {req.params.uri}")
+
+    if str(req.params.uri) != WIDGET_TEMPLATE_URI:
+        log("READ_RESOURCE unknown URI")
+        return types.ServerResult(
+            types.ReadResourceResult(
+                contents=[],
+                _meta={"error": f"Unknown resource: {req.params.uri}"}
+            )
         )
 
-    with open(js_files[0], "r", encoding="utf-8") as f:
-        js_text = f.read()
+    contents = [
+        types.TextResourceContents(
+            uri=WIDGET_TEMPLATE_URI,
+            mimeType=MIME_TYPE,
+            text=PAPERSKETCH_WIDGET_HTML,
+            _meta=_widget_meta(),
+        )
+    ]
 
-    css_text = ""
-    if css_files:
-        with open(css_files[0], "r", encoding="utf-8") as f:
-            css_text = f.read()
-
-    return js_text, css_text
-
-
-@mcp.resource(WIDGET_URI)
-def papersketch_inline_widget() -> dict[str, Any]:
-    """
-    IMPORTANT:
-    - Must return a resource with mimeType: text/html+skybridge
-    - ChatGPT loads this in an iframe and injects window.openai.toolOutput
-    """
-    js_text, css_text = _load_ui_bundle()
-
-    html = f"""<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <style>{css_text}</style>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module">
-{js_text}
-    </script>
-  </body>
-</html>
-"""
-
-    return {
-        "contents": [
-            {
-                "uri": WIDGET_URI,
-                "mimeType": "text/html+skybridge",
-                "text": html,
-                "_meta": {
-                    # Optional: allow the widget to load images from your API host
-                    # (Your canvas composer may try to fetch images from scholar.club)
-                    "openai/widgetCSP": {
-                        "resource_domains": [
-                            "https://scholar.club",
-                            "https://arxiv.org",
-                        ],
-                        "connect_domains": [
-                            "https://scholar.club",
-                            "https://arxiv.org",
-                        ],
-                    }
-                },
-            }
-        ]
-    }
+    log("READ_RESOURCE done")
+    return types.ServerResult(types.ReadResourceResult(contents=contents))
 
 
-# -----------------------------
-# Tool
-# -----------------------------
-@mcp.tool(
-    annotations={
-        "openai": {
-            "outputTemplate": WIDGET_URI,
-            "toolInvocation": {
-                "invoking": "Generating PaperSketch…",
-                "invoked": "PaperSketch ready",
-            },
-        }
-    }
-)
-def summarize_paper(url: str, lang: str = "en") -> PaperSketchResult:
-    """
-    Summarize an academic PDF from a public URL using the Papersketch API.
+async def _handle_call_tool(req: types.CallToolRequest) -> types.ServerResult:
+    log(f"CALL_TOOL start: {req.params.name}")
 
-    - url: Public URL to a PDF (e.g. arXiv link).
-    - lang: "en" (English) or "ch" (Chinese).
-    """
+    if req.params.name != TOOL_NAME:
+        log("CALL_TOOL unknown tool")
+        return types.ServerResult(
+            types.CallToolResult(
+                content=[types.TextContent(type="text", text=f"Unknown tool: {req.params.name}")],
+                isError=True,
+            )
+        )
+
+    args = req.params.arguments or {}
+    url = args.get("url")
+    lang = args.get("lang", "en")
+
+    if not url or not isinstance(url, str):
+        log("CALL_TOOL invalid args")
+        return types.ServerResult(
+            types.CallToolResult(
+                content=[types.TextContent(type="text", text="Missing required argument: url")],
+                isError=True,
+            )
+        )
+
+    log(f"CALL_TOOL invoking PaperSketch API: {url}")
+    t0 = time.time()
     data = _client.summarize(url=url, lang=lang)
+    log(f"CALL_TOOL PaperSketch API returned in {time.time() - t0:.2f}s")
 
-    return {
-        "summary": data.get("paperSketch", "") or "",
+    raw_summary = (
+        data.get("paperSketch")
+        or data.get("summary")
+        or data.get("paper_sketch")
+        or ""
+    )
+
+    structured_content = {
+        "summary": raw_summary,
         "version": data.get("version"),
         "modelInfo": data.get("modelInfo"),
     }
+
+
+    meta = _widget_meta()
+
+    log("CALL_TOOL done, returning result")
+    return types.ServerResult(
+        types.CallToolResult(
+            content=[types.TextContent(type="text", text="PaperSketch generated.")],
+            structuredContent=structured_content,
+            _meta=meta,
+        )
+    )
+
+
+# Wire handlers
+mcp._mcp_server.request_handlers[types.ReadResourceRequest] = _handle_read_resource
+mcp._mcp_server.request_handlers[types.CallToolRequest] = _handle_call_tool

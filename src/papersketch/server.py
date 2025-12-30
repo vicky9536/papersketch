@@ -1,14 +1,10 @@
 # src/papersketch/server.py
+from __future__ import annotations
 
+import uvicorn
 from .tools import mcp
 
-
-def main() -> None:
-    # Run the MCP server using Streamable HTTP transport.
-    # By default this serves at:
-    #   http://localhost:8000/mcp
-    mcp.run(transport="streamable-http")
-
+app = mcp.streamable_http_app()
 
 if __name__ == "__main__":
-    main()
+    uvicorn.run(app, host="0.0.0.0", port=8000)

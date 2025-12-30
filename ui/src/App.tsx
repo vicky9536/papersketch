@@ -1,4 +1,4 @@
-import { useMemo } from "react"
+// import { useMemo } from "react"
 import { PaperSketchInlineCard } from "./components/PaperSketchInlineCard"
 
 type ToolOutput = {
@@ -35,10 +35,12 @@ const demo: ToolOutput = {
 }
 
 export default function App() {
-  const data = useMemo(() => getToolOutput() ?? demo, [])
+  const data = getToolOutput() ?? demo
   return (
     <div className="p-3">
       <PaperSketchInlineCard data={data} />
     </div>
   )
 }
+
+console.log("toolOutput:", window.openai?.toolOutput)

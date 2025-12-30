@@ -1,0 +1,9 @@
+{
+  "name": "papersketch-repo",
+  "private": true,
+  "scripts": {
+    "ui:build": "npm --prefix ui run build",
+    "widget:build": "python3 scripts/build_widget_html.py",
+    "app:build": "npm run ui:build && npm run widget:build"
+  }
+}
