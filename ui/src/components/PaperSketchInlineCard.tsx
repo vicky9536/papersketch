@@ -10,6 +10,10 @@ type ToolOutput = {
   summary?: string
   version?: string
   modelInfo?: string
+
+  // NEW: PDF download fields
+  pdfUrl?: string
+  pdfFilename?: string
 }
 
 async function downloadBlob(blob: Blob, filename: string) {
@@ -24,20 +28,10 @@ async function downloadBlob(blob: Blob, filename: string) {
   document.body.appendChild(a)
   a.click()
 
-  // Fallback: if browser blocks iframe download, open in new tab
-  setTimeout(() => {
-    try {
-      window.open(url, "_blank", "noopener,noreferrer")
-    } catch {
-      // ignore
-    }
-  }, 300)
-
-  // Cleanup AFTER both attempts had time to run
   setTimeout(() => {
     a.remove()
     URL.revokeObjectURL(url)
-  }, 3000)
+  }, 1000)
 }
 
 
@@ -57,40 +51,48 @@ export function PaperSketchInlineCard(props: { data: ToolOutput }) {
   const [downloading, setDownloading] = useState(false)
   const [note, setNote] = useState<string | null>(null)
 
-const onDownloadSketch = async () => {
-  setNote(null)
-  setDownloading(true)
+  const onDownloadSketch = async () => {
+    setNote(null)
+    setDownloading(true)
 
-  try {
-    setNote("Preparing sketch…")
+    try {
+      // 1) Prefer server-generated PDF via pdfUrl
+        if (data.pdfUrl) {
+            setNote("Opening PDF…")
+            const absoluteUrl = new URL(data.pdfUrl, window.location.href).toString()
+            window.open(absoluteUrl, "_blank", "noopener,noreferrer")
+            setNote("Opened PDF download.")
+            return
+        }
 
-    const blob = await composeSketchFromToolOutput({
-      summary: data.summary ?? "",
-    })
 
-    if (!(blob instanceof Blob)) {
-      setNote("Error: sketch generator did not return a Blob.")
-      return
+      // 2) Fallback: existing PNG sketch behavior
+      setNote("Preparing sketch…")
+
+      const blob = await composeSketchFromToolOutput({
+        summary: data.summary ?? "",
+      })
+
+      if (!(blob instanceof Blob)) {
+        setNote("Error: sketch generator did not return a Blob.")
+        return
+      }
+
+      if (blob.size === 0) {
+        setNote("Error: sketch Blob is empty.")
+        return
+      }
+
+      setNote(`Sketch ready (${Math.round(blob.size / 1024)} KB). Downloading…`)
+      await downloadBlob(blob, "papersketch.png")
+      setNote("Downloaded sketch.")
+    } catch (e) {
+      console.error(e)
+      setNote("Download failed. See console.")
+    } finally {
+      setDownloading(false)
     }
-
-    if (blob.size === 0) {
-      setNote("Error: sketch Blob is empty.")
-      return
-    }
-
-    setNote(`Sketch ready (${Math.round(blob.size / 1024)} KB). Downloading…`)
-
-    await downloadBlob(blob, "papersketch.png")
-
-    setNote("Downloaded sketch.")
-  } catch (e) {
-    console.error(e)
-    setNote("Download failed. See console.")
-  } finally {
-    setDownloading(false)
   }
-}
-
 
   const onRefineInChat = async () => {
     await window.openai?.sendFollowUpMessage?.({
@@ -108,7 +110,12 @@ const onDownloadSketch = async () => {
           <h2 className="mt-1 heading-lg truncate">{title}</h2>
 
           <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-secondary">
-            {authors && <span className="truncate">{authors}{parsed.authors && parsed.authors.length > 2 ? " et al." : ""}</span>}
+            {authors && (
+              <span className="truncate">
+                {authors}
+                {parsed.authors && parsed.authors.length > 2 ? " et al." : ""}
+              </span>
+            )}
             {(data.modelInfo || data.version) && (
               <span className="text-tertiary">
                 {data.modelInfo ? data.modelInfo : ""}

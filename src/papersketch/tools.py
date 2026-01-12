@@ -2,13 +2,16 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 import time
+import uuid
+import os
 
 import mcp.types as types
 from mcp.server.fastmcp import FastMCP
 
 from .client import PaperSketchClient
+from .export_pdf import markdown_to_pdf_bytes
 
 TOOL_NAME = "summarize_paper"
 WIDGET_TEMPLATE_URI = "ui://widget/papersketch-inline.html"
@@ -25,9 +28,44 @@ _client = PaperSketchClient()
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 WIDGET_HTML_PATH = ASSETS_DIR / "papersketch-inline.html"
 
+# -----------------------------
+# PDF cache (in-memory)
+# token -> (pdf_bytes, filename, expires_at_epoch)
+# -----------------------------
+_PDF_CACHE: Dict[str, Tuple[bytes, str, float]] = {}
+_PDF_TTL_SECONDS = 15 * 60  # 15 minutes
+
 
 def log(msg: str) -> None:
     print(f"[PAPERSKETCH MCP] {msg}", flush=True)
+
+
+def _cache_put_pdf(pdf_bytes: bytes, filename: str) -> str:
+    token = uuid.uuid4().hex
+    _PDF_CACHE[token] = (pdf_bytes, filename, time.time() + _PDF_TTL_SECONDS)
+    return token
+
+
+def cache_get_pdf(token: str) -> Optional[Tuple[bytes, str]]:
+    """
+    Exported for server.py route to retrieve cached PDFs.
+    Returns (pdf_bytes, filename) if present and not expired, else None.
+    """
+    item = _PDF_CACHE.get(token)
+    if not item:
+        return None
+    pdf_bytes, filename, expires_at = item
+    if time.time() > expires_at:
+        _PDF_CACHE.pop(token, None)
+        return None
+    return pdf_bytes, filename
+
+
+def _cache_cleanup_expired() -> None:
+    now = time.time()
+    expired = [k for k, (_, __, exp) in _PDF_CACHE.items() if exp < now]
+    for k in expired:
+        _PDF_CACHE.pop(k, None)
 
 
 def _load_widget_html() -> str:
@@ -36,9 +74,7 @@ def _load_widget_html() -> str:
         html = WIDGET_HTML_PATH.read_text(encoding="utf8")
         log(f"Widget HTML loaded ({len(html)} bytes)")
         return html
-    raise FileNotFoundError(
-        f"Widget HTML not found at {WIDGET_HTML_PATH}"
-    )
+    raise FileNotFoundError(f"Widget HTML not found at {WIDGET_HTML_PATH}")
 
 
 PAPERSKETCH_WIDGET_HTML = _load_widget_html()
@@ -102,7 +138,7 @@ async def _handle_read_resource(req: types.ReadResourceRequest) -> types.ServerR
         return types.ServerResult(
             types.ReadResourceResult(
                 contents=[],
-                _meta={"error": f"Unknown resource: {req.params.uri}"}
+                _meta={"error": f"Unknown resource: {req.params.uri}"},
             )
         )
 
@@ -144,6 +180,10 @@ async def _handle_call_tool(req: types.CallToolRequest) -> types.ServerResult:
             )
         )
 
+    # Clean expired cache entries occasionally
+    _cache_cleanup_expired()
+
+    # 1) Call PaperSketch API
     log(f"CALL_TOOL invoking PaperSketch API: {url}")
     t0 = time.time()
     data = _client.summarize(url=url, lang=lang)
@@ -156,12 +196,39 @@ async def _handle_call_tool(req: types.CallToolRequest) -> types.ServerResult:
         or ""
     )
 
+    # 2) Generate PDF and return a small URL token (NOT base64)
+    pdf_filename = "paper_sketch.pdf"
+    pdf_url = ""
+
+    if raw_summary:
+        try:
+            t1 = time.time()
+            pdf_bytes = markdown_to_pdf_bytes(raw_summary)
+            token = _cache_put_pdf(pdf_bytes, pdf_filename)
+
+            base = os.environ.get("PAPERSKETCH_PUBLIC_BASE_URL", "").rstrip("/")
+            if base:
+                pdf_url = f"{base}/papersketch/pdf/{token}"
+            else:
+                # Fallback for local dev (will NOT work inside ChatGPT widget)
+                pdf_url = f"/papersketch/pdf/{token}"
+
+            log(
+                f"PDF generated+cached in {time.time() - t1:.2f}s "
+                f"(token={token}, {len(pdf_bytes)} bytes)"
+            )
+        except Exception as e:
+            # Don’t fail the whole tool if PDF export fails; still return the summary.
+            log(f"PDF generation failed: {e}")
+
     structured_content = {
         "summary": raw_summary,
         "version": data.get("version"),
         "modelInfo": data.get("modelInfo"),
+        # New, small download fields (safe for tool payload limits)
+        "pdfUrl": pdf_url,
+        "pdfFilename": pdf_filename,
     }
-
 
     meta = _widget_meta()
 

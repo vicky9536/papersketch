@@ -86,7 +86,7 @@ export default function App() {
   return (
     <div className="p-3">
       <div className="text-xs opacity-60">
-        BUILD MARKER: 2025-12-30-A
+        BUILD MARKER: 2026
       </div>
       <PaperSketchInlineCard data={data} />
     </div>
