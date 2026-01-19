@@ -11,7 +11,7 @@ import mcp.types as types
 from mcp.server.fastmcp import FastMCP
 
 from .client import PaperSketchClient
-from .export_pdf import markdown_to_pdf_bytes
+from .export_image import markdown_to_png_bytes
 
 TOOL_NAME = "summarize_paper"
 WIDGET_TEMPLATE_URI = "ui://widget/papersketch-inline.html"
@@ -29,43 +29,43 @@ ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 WIDGET_HTML_PATH = ASSETS_DIR / "papersketch-inline.html"
 
 # -----------------------------
-# PDF cache (in-memory)
-# token -> (pdf_bytes, filename, expires_at_epoch)
+# File cache (in-memory)
+# token -> (file_bytes, filename, mime_type, expires_at_epoch)
 # -----------------------------
-_PDF_CACHE: Dict[str, Tuple[bytes, str, float]] = {}
-_PDF_TTL_SECONDS = 15 * 60  # 15 minutes
+_FILE_CACHE: Dict[str, Tuple[bytes, str, str, float]] = {}
+_FILE_TTL_SECONDS = 15 * 60  # 15 minutes
 
 
 def log(msg: str) -> None:
     print(f"[PAPERSKETCH MCP] {msg}", flush=True)
 
 
-def _cache_put_pdf(pdf_bytes: bytes, filename: str) -> str:
+def _cache_put_file(file_bytes: bytes, filename: str, mime_type: str) -> str:
     token = uuid.uuid4().hex
-    _PDF_CACHE[token] = (pdf_bytes, filename, time.time() + _PDF_TTL_SECONDS)
+    _FILE_CACHE[token] = (file_bytes, filename, mime_type, time.time() + _FILE_TTL_SECONDS)
     return token
 
 
-def cache_get_pdf(token: str) -> Optional[Tuple[bytes, str]]:
+def cache_get_file(token: str) -> Optional[Tuple[bytes, str, str]]:
     """
-    Exported for server.py route to retrieve cached PDFs.
-    Returns (pdf_bytes, filename) if present and not expired, else None.
+    Exported for server.py route to retrieve cached files.
+    Returns (file_bytes, filename, mime_type) if present and not expired, else None.
     """
-    item = _PDF_CACHE.get(token)
+    item = _FILE_CACHE.get(token)
     if not item:
         return None
-    pdf_bytes, filename, expires_at = item
+    file_bytes, filename, mime_type, expires_at = item
     if time.time() > expires_at:
-        _PDF_CACHE.pop(token, None)
+        _FILE_CACHE.pop(token, None)
         return None
-    return pdf_bytes, filename
+    return file_bytes, filename, mime_type
 
 
 def _cache_cleanup_expired() -> None:
     now = time.time()
-    expired = [k for k, (_, __, exp) in _PDF_CACHE.items() if exp < now]
+    expired = [k for k, (_, __, ___, exp) in _FILE_CACHE.items() if exp < now]
     for k in expired:
-        _PDF_CACHE.pop(k, None)
+        _FILE_CACHE.pop(k, None)
 
 
 def _load_widget_html() -> str:
@@ -196,38 +196,46 @@ async def _handle_call_tool(req: types.CallToolRequest) -> types.ServerResult:
         or ""
     )
 
-    # 2) Generate PDF and return a small URL token (NOT base64)
-    pdf_filename = "paper_sketch.pdf"
-    pdf_url = ""
+    # 2) Generate PNG and return a small URL token (NOT base64)
+    image_filename = "paper_sketch.png"
+    image_url = ""
 
     if raw_summary:
         try:
             t1 = time.time()
-            pdf_bytes = markdown_to_pdf_bytes(raw_summary)
-            token = _cache_put_pdf(pdf_bytes, pdf_filename)
+
+            # Tune these for your preferred look:
+            # - width_px ~ 1000-1400 usually good
+            # - device_scale_factor 2.0 = crisp text
+            png_bytes = await markdown_to_png_bytes(raw_summary, width_px=1200, device_scale_factor=2.0)
+
+            token = _cache_put_file(png_bytes, image_filename, "image/png")
 
             base = os.environ.get("PAPERSKETCH_PUBLIC_BASE_URL", "").rstrip("/")
             if base:
-                pdf_url = f"{base}/papersketch/pdf/{token}"
+                image_url = f"{base}/papersketch/file/{token}"
             else:
                 # Fallback for local dev (will NOT work inside ChatGPT widget)
-                pdf_url = f"/papersketch/pdf/{token}"
+                image_url = f"/papersketch/file/{token}"
 
             log(
-                f"PDF generated+cached in {time.time() - t1:.2f}s "
-                f"(token={token}, {len(pdf_bytes)} bytes)"
+                f"PNG generated+cached in {time.time() - t1:.2f}s "
+                f"(token={token}, {len(png_bytes)} bytes)"
             )
         except Exception as e:
-            # Don’t fail the whole tool if PDF export fails; still return the summary.
-            log(f"PDF generation failed: {e}")
+            # Don’t fail the whole tool if export fails; still return the summary.
+            log(f"Image generation failed: {e}")
 
     structured_content = {
         "summary": raw_summary,
         "version": data.get("version"),
         "modelInfo": data.get("modelInfo"),
-        # New, small download fields (safe for tool payload limits)
-        "pdfUrl": pdf_url,
-        "pdfFilename": pdf_filename,
+        "imageUrl": image_url,
+        "imageFilename": image_filename,
+
+        # Backward compatibility: if your widget still expects pdfUrl, point it to the image.
+        "pdfUrl": image_url,
+        "pdfFilename": image_filename,
     }
 
     meta = _widget_meta()
