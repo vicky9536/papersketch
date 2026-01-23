@@ -11,7 +11,7 @@ from markdown import markdown
 
 
 # -----------------------------
-# Utilities for parsing header
+# Header parsing utilities
 # -----------------------------
 
 _BULLET_RE = re.compile(r"^\s*(?:[-*•])\s+(.*)\s*$", re.UNICODE)
@@ -42,20 +42,15 @@ def _extract_title_authors_institutions(
     md: str,
 ) -> Tuple[str, str, str, str]:
     """
-    Extracts:
-      - Paper Title
-      - Author Information (inline or list)
-      - Institutional Information (list)
-    Returns:
-      (title, authors_html, institutions_html, remaining_markdown)
+    Extract Paper Title / Author Information / Institutional Information
     """
     lines = md.strip().splitlines()
 
     title = ""
     authors: List[str] = []
     insts: List[str] = []
-
     remaining: List[str] = []
+
     mode = None  # None | "authors" | "insts"
 
     for raw in lines:
@@ -116,7 +111,7 @@ def _extract_title_authors_institutions(
 
 
 # -----------------------------
-# Asset loading (logo)
+# Asset loader (logo)
 # -----------------------------
 
 def _load_asset_data_url(filename: str) -> str:
@@ -141,12 +136,7 @@ async def markdown_to_png_bytes(
     device_scale_factor: float = 2.0,
 ) -> bytes:
     """
-    Render PaperSketch markdown into a single tall PNG.
-    Includes:
-      - Fixed large title + author header
-      - Two-column content
-      - All figures
-      - Scholar logo footer
+    Render PaperSketch markdown into a single tall PNG with a right-aligned footer.
     """
 
     title, authors_html, institutions_html, remaining_md = (
@@ -169,11 +159,16 @@ async def markdown_to_png_bytes(
         """
 
     logo_data_url = _load_asset_data_url("scholarLogo.png")
+
     footer_html = f"""
     <footer class="sketch-footer">
-      <img class="sketch-logo" src="{logo_data_url}" alt="Scholar logo" />
+      <div class="footer-inner">
+        <img class="sketch-logo" src="{logo_data_url}" alt="Scholar logo" />
+        <div class="sketch-url">https://scholar.club</div>
+      </div>
     </footer>
     """
+
 
     html_doc = f"""<!DOCTYPE html>
 <html>
@@ -300,12 +295,25 @@ pre {{
   margin-top: 28px;
   padding-top: 14px;
   border-top: 2px solid #eee;
-  text-align: center;
+}}
+
+.footer-inner {{
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
 }}
 
 .sketch-logo {{
   height: 38px;
   width: auto;
+}}
+
+.sketch-url {{
+  font-size: 16px;
+  font-weight: 600;
+  color: #555;
+  letter-spacing: 0.2px;
 }}
 </style>
 </head>
@@ -337,9 +345,9 @@ pre {{
                 viewport={"width": width_px, "height": 900},
                 device_scale_factor=device_scale_factor,
             )
+
             await page.set_content(html_doc, wait_until="load")
 
-            # Wait for all images (figures + logo)
             try:
                 await page.wait_for_function(
                     """
